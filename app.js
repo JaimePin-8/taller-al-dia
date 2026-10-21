@@ -41,7 +41,19 @@ const MSG_LABELS = {
   inactive: 'Cliente inactivo'
 };
 
-let S = load();
+const CFG = window.TALLER_CONFIG || {};
+const SESSION_KEY = 'tallerAlDia.sesion';
+const DEVICE_KEY = 'tallerAlDia.dispositivo';
+
+let AUTH = readJSON(SESSION_KEY); // { token, me }
+let S = migrate({});
+const SYNC = { version: 0, dirty: false, rev: 0, pushing: false, timer: null, lastOk: null, error: '', loadedFor: null };
+
+function readJSON(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+function writeJSON(k, v) {
+  try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); return true; }
+  catch (e) { return false; }
+}
 
 function migrate(s) {
   s = s && typeof s === 'object' ? s : {};
@@ -56,18 +68,111 @@ function migrate(s) {
   return s;
 }
 
-function load() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) return migrate(JSON.parse(raw));
-  } catch (e) { /* datos dañados o almacenamiento bloqueado */ }
-  return migrate({});
-}
+/* ---------- Guardado local + nube ---------- */
+
+// Cada cuenta guarda una copia en el teléfono (para usar sin internet) y la sube a la nube.
+const dataKey = () => `${KEY}:${AUTH.me.id}`;
+const metaKey = () => `${KEY}:${AUTH.me.id}:sync`;
 
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(S)); }
-  catch (e) { toast('No se pudo guardar. Descarga un respaldo en Ajustes.'); }
+  if (!AUTH?.me) return;
+  if (!writeJSON(dataKey(), S)) toast('No se pudo guardar en el teléfono. Descarga un respaldo en Ajustes.');
+  SYNC.dirty = true;
+  SYNC.rev++;
+  persistSync();
+  schedulePush();
 }
+
+function persistSync() { writeJSON(metaKey(), { version: SYNC.version, dirty: SYNC.dirty, lastOk: SYNC.lastOk }); }
+function schedulePush(delay = 1200) { clearTimeout(SYNC.timer); SYNC.timer = setTimeout(push, delay); }
+
+// Une dos copias: gana lo de este teléfono cuando el mismo registro existe en ambas.
+function mergeData(remote, local) {
+  const out = migrate({ ...remote });
+  for (const k of ['clients', 'vehicles', 'orders', 'services', 'contacts']) {
+    const map = new Map();
+    for (const x of [...(remote[k] || []), ...(local[k] || [])]) map.set(x.id ?? JSON.stringify(x), x);
+    out[k] = [...map.values()];
+  }
+  out.settings = { ...remote.settings, ...local.settings, msgs: { ...remote.settings?.msgs, ...local.settings?.msgs } };
+  out.snooze = { ...remote.snooze, ...local.snooze };
+  return out;
+}
+
+function loadLocal() {
+  const local = readJSON(dataKey()), meta = readJSON(metaKey()) || {};
+  S = migrate(local || {});
+  Object.assign(SYNC, { version: meta.version || 0, dirty: !!meta.dirty, lastOk: meta.lastOk || null, rev: 0, error: '', loadedFor: AUTH.me.id, hasLocal: !!local });
+  finishLoad();
+}
+
+function finishLoad() {
+  S.settings.onboarded = true;
+  if (!S.settings.shopName || S.settings.shopName === 'Mi Taller') S.settings.shopName = AUTH.me.shopName;
+}
+
+async function pullRemote() {
+  let r;
+  try { r = await api('GET', '/data'); }
+  catch (e) { if (e.status === 401) sessionExpired(); return false; }
+  const before = SYNC.version;
+  if (r.data) {
+    if (!SYNC.hasLocal || !SYNC.dirty) S = migrate(r.data);
+    else if (r.version !== SYNC.version) S = mergeData(migrate(r.data), S);
+    SYNC.version = r.version;
+  } else {
+    SYNC.version = 0;
+    if (!SYNC.hasLocal) {
+      // Primera vez con cuenta: sube lo que ya había en este teléfono.
+      const legacy = readJSON(KEY);
+      if (legacy?.clients?.length) S = migrate(legacy);
+      writeJSON(KEY, null);
+    }
+    SYNC.dirty = true;
+  }
+  SYNC.hasLocal = true;
+  finishLoad();
+  writeJSON(dataKey(), S);
+  persistSync();
+  if (SYNC.dirty) schedulePush(200);
+  return before !== SYNC.version;
+}
+
+async function push() {
+  if (SYNC.pushing || !SYNC.dirty || !AUTH?.me?.hasAccess) return;
+  SYNC.pushing = true;
+  let merged = false;
+  try {
+    for (let tries = 0; tries < 3; tries++) {
+      const rev = SYNC.rev;
+      try {
+        const r = await api('PUT', '/data', { data: S, baseVersion: SYNC.version });
+        SYNC.version = r.version;
+        SYNC.lastOk = Date.now();
+        SYNC.error = '';
+        if (rev === SYNC.rev) SYNC.dirty = false;
+        break;
+      } catch (e) {
+        if (e.status !== 409) throw e;
+        S = mergeData(migrate(e.body.data || {}), S);
+        SYNC.version = e.body.version;
+        writeJSON(dataKey(), S);
+        merged = true;
+      }
+    }
+  } catch (e) {
+    SYNC.error = e.status === 0 ? 'Sin conexión. Los cambios se subirán cuando vuelva el internet.' : e.message;
+    if (e.status === 401) { SYNC.pushing = false; return sessionExpired(); }
+    if (e.status === 402) refreshMe().then(render).catch(() => {});
+  } finally {
+    SYNC.pushing = false;
+    if (AUTH?.me) persistSync();
+  }
+  if (SYNC.dirty && !SYNC.error) schedulePush();
+  if (merged && !isTyping()) render();
+}
+
+const isTyping = () => !!document.activeElement?.matches('input, textarea, select');
 
 /* ================= Utilidades ================= */
 
@@ -294,7 +399,10 @@ const ICONS = {
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
   upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
-  trend: '<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>'
+  trend: '<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
+  eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>'
 };
 const ic = (n, s = 22) => `<svg class="ic" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
 
@@ -381,18 +489,265 @@ function empty(icon, title, text, cta = '') {
 
 /* ================= Vistas ================= */
 
-function vWelcome() {
-  return `<main class="welcome">
-    <div class="welcome-logo"><img src="icons/icon-192.png" alt="" width="88" height="88"></div>
-    <h1>Taller al Día</h1>
-    <p class="lead">Avísale a cada cliente cuando le toca su servicio, da seguimiento a lo que cotizaste y no pierdas un peso en cuentas por cobrar.</p>
-    <form data-form="welcome" class="stack">
-      <label class="field"><span>Nombre del taller</span><input name="shopName" required placeholder="Ej. Taller Mecánico Garza" autocomplete="organization"></label>
-      <label class="field"><span>WhatsApp del taller (opcional)</span><input name="phone" inputmode="tel" placeholder="10 dígitos"></label>
-      <button class="btn primary big" type="submit">Empezar</button>
-    </form>
-    <button class="btn ghost" data-act="loadDemo">Probar con datos de ejemplo</button>
+/* ---------- Acceso: cuenta, código por correo y suscripción ---------- */
+
+const PRICES = { mensual: 250, anual: 2500 };
+const PW_RULES = [
+  ['Más de 10 caracteres', p => p.length >= 11],
+  ['Un carácter especial (! @ # $ % & * …)', p => /[^\p{L}\p{N}\s]/u.test(p)],
+  ['Una letra', p => /\p{L}/u.test(p)],
+  ['Un número', p => /\p{N}/u.test(p)]
+];
+let authUI = { view: 'login', email: '', shopName: '', challenge: null, error: '', notice: '', lockUntil: 0, resendAt: 0 };
+let planSel = 'anual';
+let payWait = false;
+
+async function api(method, path, body) {
+  if (!CFG.apiUrl || CFG.apiUrl.includes('TU-PROYECTO')) {
+    const err = new Error('La app todavía no está conectada a su servidor.');
+    err.status = 0;
+    throw err;
+  }
+  let r;
+  try {
+    r = await fetch(CFG.apiUrl + path, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...(AUTH?.token ? { Authorization: 'Bearer ' + AUTH.token } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+  } catch (e) {
+    const err = new Error('Sin conexión. Revisa tu internet e inténtalo de nuevo.');
+    err.status = 0;
+    throw err;
+  }
+  let data = {};
+  try { data = await r.json(); } catch (e) { /* sin cuerpo */ }
+  if (!r.ok) {
+    const err = new Error(data.error || 'Error del servidor. Intenta de nuevo.');
+    err.status = r.status;
+    err.body = data;
+    throw err;
+  }
+  return data;
+}
+
+async function refreshMe() {
+  AUTH.me = await api('GET', '/me');
+  writeJSON(SESSION_KEY, AUTH);
+  return AUTH.me;
+}
+
+function sessionExpired() {
+  AUTH = null;
+  writeJSON(SESSION_KEY, null);
+  authUI = { ...authUI, view: 'login', error: '', notice: 'Tu sesión terminó. Vuelve a entrar.' };
+  render();
+}
+
+async function onSession(r) {
+  AUTH = { token: r.token, me: r.me };
+  writeJSON(SESSION_KEY, AUTH);
+  if (r.deviceToken) try { localStorage.setItem(DEVICE_KEY, r.deviceToken); } catch (e) { /* sin almacenamiento */ }
+  authUI = { view: 'login', email: authUI.email, shopName: '', challenge: null, error: '', notice: '', lockUntil: 0, resendAt: 0 };
+  loadLocal();
+  if (location.hash !== '#/') history.replaceState(null, '', location.pathname + '#/');
+  render();
+  await pullRemote();
+  render();
+}
+
+function toCode(r, view = 'code') {
+  authUI = { ...authUI, view, challenge: r, error: '', notice: '', resendAt: Date.now() + 60_000 };
+  render();
+  $('[name=code]')?.focus();
+}
+
+// Corre una llamada de acceso: desactiva el botón y muestra el error si falla.
+async function authRun(form, fn) {
+  const btn = form?.querySelector('[type=submit]');
+  const label = btn?.innerHTML;
+  if (btn) { btn.disabled = true; btn.textContent = 'Un momento…'; }
+  authUI.notice = '';
+  try { await fn(); }
+  catch (e) {
+    if (e.body?.code === 'locked') { authUI.lockUntil = Date.now() + e.body.retryAfter * 1000; authUI.error = ''; }
+    else authUI.error = e.message;
+    if (e.body?.code === 'code_expired' && authUI.view === 'code') authUI.error += ' Toca “Reenviar código”.';
+    render();
+  } finally {
+    if (btn?.isConnected) { btn.disabled = false; btn.innerHTML = label; }
+  }
+}
+
+const fmtLeft = until => { const s = Math.max(0, Math.ceil((until - Date.now()) / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const pwChecklist = pw => PW_RULES.map(([t, f]) => `<li class="${f(pw) ? 'ok' : ''}">${ic(f(pw) ? 'check' : 'x', 16)}${t}</li>`).join('');
+
+function pwField(name, label, autocomplete, live = false) {
+  return `<label class="field"><span>${label}</span><div class="pw">
+    <input name="${name}" type="password" autocomplete="${autocomplete}" required maxlength="128" ${live ? 'data-live="pw"' : ''}>
+    <button type="button" class="pw-eye" data-act="togglePw" aria-label="Mostrar contraseña">${ic('eye', 20)}</button>
+  </div></label>${live ? `<ul class="checklist" id="pw-check">${pwChecklist('')}</ul>` : ''}`;
+}
+
+function vAuth() {
+  const a = authUI;
+  const head = (title, sub) => `<div class="auth-head"><img src="icons/icon-192.png" alt="" width="64" height="64"><h1>${title}</h1>${sub ? `<p class="lead">${sub}</p>` : ''}</div>`;
+  const msgs = `${a.notice ? `<div class="alert">${esc(a.notice)}</div>` : ''}${a.error ? `<div class="alert bad" role="alert">${esc(a.error)}</div>` : ''}`;
+  const emailField = `<label class="field"><span>Correo</span><input name="email" type="email" inputmode="email" autocomplete="username" autocapitalize="off" required value="${esc(a.email)}"></label>`;
+  const resend = () => `<button class="btn ghost" id="resend-btn" data-act="resendCode" ${a.resendAt > Date.now() ? 'disabled' : ''}>${a.resendAt > Date.now() ? `Reenviar código en ${Math.ceil((a.resendAt - Date.now()) / 1000)} s` : 'Reenviar código'}</button>`;
+  const codeField = `<label class="field"><span>Código de 6 dígitos</span><input class="code-in" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="••••••"></label>`;
+
+  switch (a.view) {
+    case 'signup':
+      return `<main class="auth">${head('Crear cuenta', '14 días gratis. Después $250 al mes o $2,500 al año.')}${msgs}
+        <form data-form="signup" class="stack" novalidate>
+          <label class="field"><span>Nombre del taller</span><input name="shopName" required maxlength="80" autocomplete="organization" value="${esc(a.shopName)}" placeholder="Ej. Taller Mecánico Garza"></label>
+          ${emailField}
+          ${pwField('password', 'Contraseña', 'new-password', true)}
+          ${pwField('password2', 'Repite la contraseña', 'new-password')}
+          <button class="btn primary big" type="submit">Crear cuenta</button>
+        </form>
+        <button class="btn ghost" data-act="authView" data-v="login">Ya tengo cuenta</button>
+      </main>`;
+
+    case 'code': {
+      const c = a.challenge;
+      const why = c.purpose === 'verify' ? 'Confirma tu correo' : 'Celular nuevo';
+      return `<main class="auth">${head(why, `Te enviamos un código de 6 dígitos a <b>${esc(c.email)}</b>. Vence en 10 minutos.`)}${msgs}
+        <form data-form="code" class="stack" novalidate>
+          ${codeField}
+          <label class="check"><input type="checkbox" name="trust" checked><span>Recordar este celular 30 días. Desmárcalo si el celular no es tuyo.</span></label>
+          <button class="btn primary big" type="submit">Confirmar</button>
+        </form>
+        ${resend()}
+        <button class="btn ghost" data-act="authView" data-v="login">Usar otra cuenta</button>
+      </main>`;
+    }
+
+    case 'forgot':
+      return `<main class="auth">${head('Recuperar contraseña', 'Te mandamos un código a tu correo para crear una contraseña nueva. También quita el bloqueo por intentos.')}${msgs}
+        <form data-form="forgot" class="stack" novalidate>
+          ${emailField}
+          <button class="btn primary big" type="submit">Enviar código</button>
+        </form>
+        <button class="btn ghost" data-act="authView" data-v="login">Volver</button>
+      </main>`;
+
+    case 'reset':
+      return `<main class="auth">${head('Nueva contraseña', `Si <b>${esc(a.challenge.email)}</b> tiene cuenta, le llegó un código.`)}${msgs}
+        <form data-form="reset" class="stack" novalidate>
+          ${codeField}
+          ${pwField('password', 'Contraseña nueva', 'new-password', true)}
+          ${pwField('password2', 'Repite la contraseña', 'new-password')}
+          <button class="btn primary big" type="submit">Cambiar contraseña y entrar</button>
+        </form>
+        ${resend()}
+        <button class="btn ghost" data-act="authView" data-v="login">Volver</button>
+      </main>`;
+
+    default: {
+      const locked = a.lockUntil > Date.now();
+      return `<main class="auth">${head('Taller al Día', 'Avisa a tus clientes cuando les toca su servicio y no pierdas un peso.')}${msgs}
+        <form data-form="login" class="stack" novalidate>
+          ${emailField}
+          ${pwField('password', 'Contraseña', 'current-password')}
+          ${locked ? `<div class="alert bad" role="alert">${ic('lock', 18)}<span>Por seguridad bloqueamos el acceso después de 3 intentos fallidos. Intenta de nuevo en <b id="lock-left">${fmtLeft(a.lockUntil)}</b> o recupera tu contraseña.</span></div>` : ''}
+          <button class="btn primary big" type="submit" ${locked ? 'disabled' : ''}>Entrar</button>
+        </form>
+        <button class="btn ghost" data-act="authView" data-v="forgot">Olvidé mi contraseña</button>
+        <div class="auth-alt"><span>¿Primera vez?</span><button class="btn ghost wide" data-act="authView" data-v="signup">Crear cuenta · 14 días gratis</button></div>
+      </main>`;
+    }
+  }
+}
+
+// Actualiza contadores (bloqueo y reenviar código) sin redibujar los campos.
+setInterval(() => {
+  if (AUTH?.me) return;
+  const lock = $('#lock-left');
+  if (lock) { if (authUI.lockUntil <= Date.now()) { authUI.lockUntil = 0; render(); } else lock.textContent = fmtLeft(authUI.lockUntil); }
+  const rb = $('#resend-btn');
+  if (rb) {
+    const s = Math.ceil((authUI.resendAt - Date.now()) / 1000);
+    rb.disabled = s > 0;
+    rb.textContent = s > 0 ? `Reenviar código en ${s} s` : 'Reenviar código';
+  }
+}, 1000);
+
+const fmtTs = ms => (ms ? fmtDate(localISO(new Date(ms))) : '');
+
+function vPaywall() {
+  const me = AUTH.me, s = me.subscription, trial = !s.trialUsed;
+  let title, sub;
+  if (payWait) { title = 'Confirmando tu pago…'; sub = 'Esto tarda unos segundos.'; }
+  else if (s.status === 'none') { title = `Hola, ${esc(me.shopName)}`; sub = trial ? `Elige tu plan. Los primeros ${me.trialDays} días son gratis y puedes cancelar antes sin pagar nada.` : 'Elige tu plan para empezar.'; }
+  else if (s.status === 'canceled') { title = 'Tu suscripción terminó'; sub = 'Tus datos siguen guardados. Reactívala para seguir usando la app.'; }
+  else { title = 'No pudimos cobrar tu tarjeta'; sub = 'Actualiza tu tarjeta para seguir usando la app. Tus datos siguen guardados.'; }
+  const plan = (k, name, note, per, tag = '') => `<button class="plan ${planSel === k ? 'on' : ''}" data-act="pickPlan" data-p="${k}" aria-pressed="${planSel === k}">
+      ${tag ? `<span class="plan-tag">${tag}</span>` : ''}
+      <span class="plan-radio"></span>
+      <span class="grow"><b>${name}</b><small>${note}</small></span>
+      <span class="plan-price">${money(PRICES[k])}<small>${per}</small></span>
+    </button>`;
+  const fixCard = s.status !== 'none' && s.status !== 'canceled';
+  return `<main class="auth paywall">
+    <div class="auth-head"><img src="icons/icon-192.png" alt="" width="64" height="64"><h1>${title}</h1><p class="lead">${sub}</p></div>
+    ${payWait ? '<div class="spinner" aria-hidden="true"></div>' : `
+    <div class="stack">
+      ${plan('anual', 'Anual', `Pagas ${money(PRICES.anual)} en lugar de ${money(PRICES.mensual * 12)} · equivale a ${money(PRICES.anual / 12)} al mes`, '/año', `Ahorras ${money(PRICES.mensual * 12 - PRICES.anual)}`)}
+      ${plan('mensual', 'Mensual', 'Se cobra cada mes', '/mes')}
+    </div>
+    <ul class="perks">
+      <li>${ic('check', 18)}Recordatorios de servicio por WhatsApp</li>
+      <li>${ic('check', 18)}Seguimiento de cotizaciones y cobranza</li>
+      <li>${ic('check', 18)}Tus datos respaldados en la nube</li>
+      <li>${ic('check', 18)}Cancela cuando quieras desde Ajustes</li>
+    </ul>
+    <button class="btn primary big" data-act="checkout">${trial ? `Empezar ${me.trialDays} días gratis` : 'Suscribirme'}</button>
+    ${fixCard ? `<button class="btn ghost" data-act="portal">Actualizar tarjeta</button>` : ''}
+    <p class="hint center">${trial ? `Hoy no se te cobra. El primer cobro llega el ${fmtTs(Date.now() + me.trialDays * DAY)}. ` : ''}Pago seguro con Stripe. Precios en pesos mexicanos.</p>`}
+    <div class="auth-alt">
+      ${S.clients.length ? `<button class="btn ghost" data-act="exportData">${ic('download', 18)} Descargar mis datos</button>` : ''}
+      <button class="btn ghost" data-act="logout">Cerrar sesión (${esc(me.email)})</button>
+    </div>
   </main>`;
+}
+
+async function waitForPayment() {
+  payWait = true;
+  render();
+  for (let i = 0; i < 20 && !AUTH?.me?.hasAccess; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try { await refreshMe(); } catch (e) { if (e.status === 401) return sessionExpired(); }
+  }
+  payWait = false;
+  if (AUTH?.me?.hasAccess) { toast('¡Listo! Tu suscripción está activa.'); schedulePush(100); }
+  else toast('Tu pago se está procesando. Revisa en unos minutos.');
+  render();
+}
+
+function accountSection() {
+  const me = AUTH.me, s = me.subscription;
+  const price = s.plan === 'anual' ? `${money(PRICES.anual)} al año` : `${money(PRICES.mensual)} al mes`;
+  const [label, tone] = {
+    trialing: ['Prueba gratis', 'accent'], active: ['Activa', 'ok'], past_due: ['Pago pendiente', 'bad']
+  }[s.status] || ['Inactiva', 'muted'];
+  let line = '';
+  if (s.status === 'trialing') line = `Gratis hasta el ${fmtTs(s.trialEnd)}. Después: plan ${s.plan}, ${price}.`;
+  else if (s.status === 'active') line = s.cancelAtPeriodEnd ? `Cancelada. Puedes usarla hasta el ${fmtTs(s.periodEnd)}.` : `Plan ${s.plan}, ${price}. Se renueva el ${fmtTs(s.periodEnd)}.`;
+  else if (s.status === 'past_due') line = 'No pudimos cobrar tu tarjeta. Actualízala para no perder el acceso.';
+  if (s.status === 'trialing' && s.cancelAtPeriodEnd) line = `Cancelada. Puedes usarla gratis hasta el ${fmtTs(s.trialEnd)} y no se te cobrará.`;
+  const sync = SYNC.dirty ? (SYNC.error || 'Subiendo cambios…') : SYNC.lastOk ? `Respaldado en la nube ${rel(daysFromToday(localISO(new Date(SYNC.lastOk))))}` : 'Respaldado en la nube';
+  return `<section class="card stack">
+    <h2 class="card-h">Cuenta</h2>
+    <div class="li"><span>Correo</span><b class="ell">${esc(me.email)}</b></div>
+    <div class="li"><span>Suscripción</span><span class="pill ${tone}">${label}</span></div>
+    ${line ? `<p class="hint">${line}</p>` : ''}
+    <p class="sync ${SYNC.dirty ? (SYNC.error ? 't-warn' : '') : 't-ok'}">${ic('cloud', 18)} ${esc(sync)}</p>
+    <button class="btn ghost" data-act="portal">Administrar suscripción y tarjeta</button>
+    <button class="btn ghost" data-act="logout">Cerrar sesión</button>
+    <button class="btn danger-ghost" data-act="logoutAll">Cerrar sesión en todos los celulares</button>
+  </section>`;
 }
 
 function vHome() {
@@ -816,6 +1171,7 @@ function vSettings() {
   const st = S.settings;
   return header('Ajustes', { back: '#/' }) + `
   <main class="page">
+    ${accountSection()}
     <section class="card stack">
       <h2 class="card-h">Tu taller</h2>
       <label class="field"><span>Nombre</span><input data-setting="shopName" value="${esc(st.shopName)}"></label>
@@ -846,7 +1202,7 @@ function vSettings() {
 
     <section class="card stack">
       <h2 class="card-h">Respaldo</h2>
-      <p class="hint">Tus datos viven en este teléfono. Descarga un respaldo cada semana y guárdalo en tu correo o Drive.</p>
+      <p class="hint">Tus datos se guardan en tu cuenta en la nube y en este teléfono para usarlos sin internet. Si quieres una copia propia, descárgala aquí.</p>
       <button class="btn primary" data-act="exportData">${ic('download', 18)} Descargar respaldo</button>
       <label class="btn ghost">${ic('upload', 18)} Restaurar respaldo<input type="file" accept="application/json,.json" data-file="import" hidden></label>
     </section>
@@ -856,7 +1212,7 @@ function vSettings() {
       <button class="btn ghost" data-act="loadDemo">Cargar datos de ejemplo</button>
       <button class="btn danger-ghost" data-act="wipe">${ic('trash', 18)} Borrar todos los datos</button>
     </section>
-    <p class="muted center small">Taller al Día · v1.0</p>
+    <p class="muted center small">Taller al Día · v2.0</p>
   </main>`;
 }
 
@@ -964,6 +1320,53 @@ const actions = {
   loadDemo() {
     if (S.clients.length && !confirm('Esto reemplaza tus datos actuales con datos de ejemplo. ¿Continuar?')) return;
     S = buildDemo(); save(); closeSheet(); go('#/'); render(); toast('Datos de ejemplo cargados');
+  },
+  // Acceso y suscripción
+  authView(el) { authUI = { ...authUI, view: el.dataset.v, error: '', notice: '' }; render(); $('main input')?.focus(); },
+  togglePw(el) {
+    const i = el.previousElementSibling;
+    i.type = i.type === 'password' ? 'text' : 'password';
+    el.setAttribute('aria-label', i.type === 'password' ? 'Mostrar contraseña' : 'Ocultar contraseña');
+  },
+  resendCode(el) {
+    authRun({ querySelector: () => el }, async () => {
+      const r = await api('POST', '/resend', { challengeId: authUI.challenge.challengeId });
+      toCode(r, authUI.view);
+      toast('Te enviamos un código nuevo');
+    });
+  },
+  pickPlan(el) { planSel = el.dataset.p; render(); },
+  async checkout(el) {
+    el.disabled = true;
+    try { location.href = (await api('POST', '/billing/checkout', { plan: planSel })).url; }
+    catch (e) { el.disabled = false; toast(e.message); if (e.body?.code === 'already_subscribed') refreshMe().then(render); }
+  },
+  async portal(el) {
+    el.disabled = true;
+    try { location.href = (await api('POST', '/billing/portal')).url; }
+    catch (e) { el.disabled = false; toast(e.message); }
+  },
+  async logout() {
+    if (SYNC.dirty) {
+      await push();
+      if (SYNC.dirty && !confirm('Hay cambios que no se han subido a la nube (¿sin internet?). Si cierras sesión se pierden. ¿Cerrar de todos modos?')) return;
+    }
+    api('POST', '/logout').catch(() => {});
+    writeJSON(dataKey(), null);
+    writeJSON(metaKey(), null);
+    AUTH = null;
+    writeJSON(SESSION_KEY, null);
+    S = migrate({});
+    authUI = { ...authUI, view: 'login', error: '', notice: 'Cerraste sesión.' };
+    history.replaceState(null, '', location.pathname + '#/');
+    render();
+  },
+  async logoutAll(el) {
+    if (!confirm('Se cerrará la sesión en todos los celulares y cada uno pedirá código por correo de nuevo. ¿Continuar?')) return;
+    try { await api('POST', '/logout-all'); } catch (e) { return toast(e.message); }
+    localStorage.removeItem(DEVICE_KEY);
+    SYNC.dirty = false;
+    actions.logout(el);
   },
   send(el) {
     const it = findItem(el.dataset.key);
@@ -1074,18 +1477,45 @@ const actions = {
   wipe() {
     if (!confirm('¿Borrar TODOS los datos de este teléfono? Descarga un respaldo antes.')) return;
     if (prompt('Escribe BORRAR para confirmar') !== 'BORRAR') return;
-    S = migrate({}); save(); go('#/'); render();
+    S = migrate({}); finishLoad(); save(); go('#/'); render();
   }
 };
 
 function focusLast(sel) { const els = document.querySelectorAll(sel); els[els.length - 1]?.focus(); }
 
 const forms = {
-  welcome(f) {
-    S.settings.shopName = f.shopName.trim() || 'Mi Taller';
-    S.settings.phone = f.phone.trim();
-    S.settings.onboarded = true;
-    save(); go('#/'); render();
+  login(f, ds, form) {
+    authUI.email = f.email.trim();
+    return authRun(form, async () => {
+      const r = await api('POST', '/login', { email: f.email, password: f.password, deviceToken: localStorage.getItem(DEVICE_KEY) || undefined });
+      if (r.token) return onSession(r);
+      toCode(r);
+    });
+  },
+  signup(f, ds, form) {
+    authUI.email = f.email.trim();
+    authUI.shopName = f.shopName.trim();
+    const bad = PW_RULES.filter(([, ok]) => !ok(f.password)).map(([t]) => t.toLowerCase());
+    if (!authUI.shopName) { authUI.error = 'Escribe el nombre de tu taller.'; return render(); }
+    if (bad.length) { authUI.error = `A la contraseña le falta: ${bad.join(', ')}.`; return render(); }
+    if (f.password !== f.password2) { authUI.error = 'Las contraseñas no coinciden.'; return render(); }
+    return authRun(form, async () => toCode(await api('POST', '/signup', { shopName: f.shopName, email: f.email, password: f.password })));
+  },
+  code(f, ds, form) {
+    return authRun(form, async () => onSession(await api('POST', '/verify', { challengeId: authUI.challenge.challengeId, code: f.code.trim(), trustDevice: f.trust === 'on' })));
+  },
+  forgot(f, ds, form) {
+    authUI.email = f.email.trim();
+    return authRun(form, async () => toCode(await api('POST', '/forgot', { email: f.email }), 'reset'));
+  },
+  reset(f, ds, form) {
+    const bad = PW_RULES.filter(([, ok]) => !ok(f.password)).map(([t]) => t.toLowerCase());
+    if (bad.length) { authUI.error = `A la contraseña le falta: ${bad.join(', ')}.`; return render(); }
+    if (f.password !== f.password2) { authUI.error = 'Las contraseñas no coinciden.'; return render(); }
+    return authRun(form, async () => {
+      await onSession(await api('POST', '/reset', { challengeId: authUI.challenge.challengeId, code: f.code.trim(), password: f.password, trustDevice: true }));
+      toast('Contraseña cambiada');
+    });
   },
   payment(f, ds) {
     const o = order(ds.id), amt = +f.amount || 0;
@@ -1123,7 +1553,7 @@ const forms = {
 
 function buildDemo() {
   const s = migrate({});
-  s.settings.shopName = S.settings.onboarded && S.settings.shopName !== 'Mi Taller' ? S.settings.shopName : 'Taller Mecánico Demo';
+  s.settings.shopName = S.settings.shopName && S.settings.shopName !== 'Mi Taller' ? S.settings.shopName : 'Taller Mecánico Demo';
   s.settings.phone = S.settings.phone;
   s.settings.onboarded = true;
   const t = todayISO(), ago = n => addDays(t, -n);
@@ -1186,8 +1616,9 @@ function parseHash() {
 function render() {
   const { parts, q } = parseHash();
   let view, tab = parts[0] || '';
-  if (!S.settings.onboarded) { view = vWelcome(); tab = null; }
-  else switch (parts[0]) {
+  if (!AUTH?.me) { app.innerHTML = vAuth(); return renderNav(null); }
+  if (!AUTH.me.hasAccess || payWait) { app.innerHTML = vPaywall(); return renderNav(null); }
+  switch (parts[0]) {
     case undefined: view = vHome(); break;
     case 'avisos': view = vAvisos(parts[1] || 'svc'); break;
     case 'ordenes': view = vOrders(parts[1] || 'taller'); break;
@@ -1244,6 +1675,7 @@ document.addEventListener('input', e => {
   onDraftInput(e);
   if (el.dataset.live === 'clients') $('#list').innerHTML = clientRows(el.value);
   if (el.dataset.live === 'pick') $('#pick-results').innerHTML = pickRows(el.value);
+  if (el.dataset.live === 'pw') $('#pw-check').innerHTML = pwChecklist(el.value);
 });
 
 document.addEventListener('change', e => {
@@ -1261,7 +1693,7 @@ document.addEventListener('change', e => {
         const data = JSON.parse(r.result);
         if (!Array.isArray(data.clients) || !Array.isArray(data.orders)) throw new Error('formato');
         if (!confirm(`Restaurar respaldo con ${data.clients.length} clientes y ${data.orders.length} órdenes? Reemplaza lo actual.`)) return;
-        S = migrate(data); S.settings.onboarded = true; save(); go('#/'); toast('Respaldo restaurado');
+        S = migrate(data); finishLoad(); save(); go('#/'); toast('Respaldo restaurado');
       } catch (err) { toast('Ese archivo no es un respaldo válido'); }
     };
     r.readAsText(el.files[0]);
@@ -1273,7 +1705,7 @@ document.addEventListener('submit', e => {
   const f = e.target, h = forms[f.dataset.form];
   if (!h) return;
   e.preventDefault();
-  h(Object.fromEntries(new FormData(f)), f.dataset);
+  h(Object.fromEntries(new FormData(f)), f.dataset, f);
 });
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
@@ -1287,7 +1719,42 @@ function toast(msg) {
   toastT = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
-render();
+async function boot() {
+  const pago = new URLSearchParams(location.search).get('pago');
+  if (pago) history.replaceState(null, '', location.pathname + location.hash);
+  if (!AUTH?.token) return render();
+  if (AUTH.me) { loadLocal(); render(); }
+  else app.innerHTML = '<div class="spinner" aria-hidden="true"></div>';
+  try { await refreshMe(); }
+  catch (e) {
+    if (e.status === 401) return sessionExpired();
+    if (!AUTH.me) { AUTH = null; authUI.error = e.message; return render(); }
+    // Sin internet: se sigue con la copia del teléfono.
+  }
+  if (SYNC.loadedFor !== AUTH.me.id) loadLocal();
+  await pullRemote();
+  render();
+  if (pago === 'ok' && !AUTH.me.hasAccess) waitForPayment();
+  else if (pago === 'ok') toast('¡Listo! Tu suscripción está activa.');
+  else if (pago === 'cancelado') toast('No se hizo ningún cargo.');
+}
+
+// Al volver a la app: sube lo pendiente y trae cambios de otros celulares o de la suscripción.
+let lastCheck = Date.now();
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !AUTH?.me || Date.now() - lastCheck < 60_000) return;
+  lastCheck = Date.now();
+  try {
+    const had = AUTH.me.hasAccess;
+    await refreshMe();
+    const changed = SYNC.dirty ? (await push(), false) : await pullRemote();
+    if ((changed || had !== AUTH.me.hasAccess) && !isTyping() && !document.querySelector('.sheet-wrap')) render();
+  } catch (e) { if (e.status === 401) sessionExpired(); }
+});
+window.addEventListener('online', () => { if (SYNC.dirty) { SYNC.error = ''; push(); } });
+setInterval(() => { if (SYNC.dirty && !SYNC.pushing) { SYNC.error = ''; push(); } }, 60_000);
+
+boot();
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 navigator.storage?.persist?.().catch(() => {});

@@ -2,6 +2,8 @@
 <html lang="es-MX">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' http://localhost:8787 https://*.supabase.co; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Taller al Día</title>
   <meta name="description" content="Recordatorios de servicio, cotizaciones y cobranza para talleres mecánicos.">
@@ -19,6 +21,7 @@
   <div id="app"></div>
   <nav class="tabbar" id="tabbar" hidden></nav>
   <div id="toast" role="status" aria-live="polite"></div>
+  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -1,0 +1,6 @@
+project_id = "taller-al-dia"
+
+# La función hace su propia autenticación (sesiones, códigos y bloqueo),
+# y Stripe llama al webhook sin token de Supabase.
+[functions.api]
+verify_jwt = false
