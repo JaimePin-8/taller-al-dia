@@ -5,6 +5,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+
+# Lee una llave: la copias y presionas Enter (se toma del portapapeles) o la pegas en el campo oculto.
+pedir_llave() {
+  local msg="$1" pref="$2" k
+  while true; do
+    read -rsp "$msg: copia la llave y presiona Enter (o pégala aquí): " k >&2; echo >&2
+    [[ -z "$k" ]] && k=$(pbpaste 2>/dev/null | tr -d '[:space:]')
+    if [[ "$k" == "$pref"* ]]; then echo "     Llave recibida (${#k} caracteres)." >&2; printf '%s' "$k"; return; fi
+    echo "     No se copió una llave que empiece con $pref. Cópiala de nuevo y vuelve a presionar Enter." >&2
+  done
+}
+
 SB="npx -y supabase@2.119.0"
 APP_URL="https://jaimepin-8.github.io/taller-al-dia/"
 ORIGIN="https://jaimepin-8.github.io"
@@ -28,13 +40,14 @@ $SB db push
 API="https://$REF.supabase.co/functions/v1/api"
 
 echo
-read -rsp "3/6  Llave secreta de Stripe (sk_test_… para pruebas, sk_live_… para cobrar de verdad): " STRIPE_KEY; echo
+STRIPE_KEY=$(pedir_llave "3/6  Llave secreta de Stripe" "sk_")
+[[ "$STRIPE_KEY" == sk_test_* || "$STRIPE_KEY" == sk_live_* ]] || { echo "Esa no es una llave secreta de Stripe (debe empezar con sk_test_ o sk_live_)."; exit 1; }
 STRIPE_OUT=$(STRIPE_SECRET_KEY="$STRIPE_KEY" node tools/stripe-setup.mjs "$API" "$APP_URL")
 WEBHOOK_SECRET=$(printf '%s\n' "$STRIPE_OUT" | sed -n 's/^STRIPE_WEBHOOK_SECRET=//p')
 PORTAL_CONFIG=$(printf '%s\n' "$STRIPE_OUT" | sed -n 's/^STRIPE_PORTAL_CONFIG=//p')
 
 echo
-read -rsp "4/6  Llave de Resend (re_…): " RESEND_KEY; echo
+RESEND_KEY=$(pedir_llave "4/6  Llave de Resend" "re_")
 read -rp "     Remitente de los correos [Taller al Día <onboarding@resend.dev>]: " MAIL_FROM
 MAIL_FROM=${MAIL_FROM:-"Taller al Día <onboarding@resend.dev>"}
 

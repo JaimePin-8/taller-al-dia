@@ -2,5 +2,5 @@
 window.TALLER_CONFIG = {
   apiUrl: ['localhost', '127.0.0.1'].includes(location.hostname)
     ? 'http://localhost:8787/api'
-    : 'https://TU-PROYECTO.supabase.co/functions/v1/api'
+    : 'https://egockraitcrcwpbkyjwi.supabase.co/functions/v1/api'
 };
