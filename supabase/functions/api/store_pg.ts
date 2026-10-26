@@ -11,6 +11,7 @@ type Row = Record<string, any>;
 const toAccount = (r: Row | null): Account | null => r && {
   id: r.id, email: r.email, passwordHash: r.password_hash, shopName: r.shop_name,
   emailVerifiedAt: ts(r.email_verified_at), createdAt: ts(r.created_at)!, stripeCustomerId: r.stripe_customer_id,
+  privacyVersion: r.privacy_version, privacyAcceptedAt: ts(r.privacy_accepted_at),
   sub: {
     status: r.sub_status, plan: r.sub_plan, periodEnd: ts(r.sub_period_end), trialEnd: ts(r.sub_trial_end),
     cancelAtPeriodEnd: r.sub_cancel_at_period_end, trialUsed: r.sub_trial_used
@@ -23,6 +24,8 @@ function accountPatch(p: AccountPatch): Row {
   if ('shopName' in p) o.shop_name = p.shopName;
   if ('emailVerifiedAt' in p) o.email_verified_at = iso(p.emailVerifiedAt);
   if ('stripeCustomerId' in p) o.stripe_customer_id = p.stripeCustomerId;
+  if ('privacyVersion' in p) o.privacy_version = p.privacyVersion;
+  if ('privacyAcceptedAt' in p) o.privacy_accepted_at = iso(p.privacyAcceptedAt);
   const s = p.sub;
   if (s) {
     if ('status' in s) o.sub_status = s.status;
@@ -54,8 +57,8 @@ export function pgStore(url: string, serviceKey: string): Store {
     getAccountByEmail: email => acc('email', email),
     getAccount: id => acc('id', id),
     getAccountByCustomer: c => acc('stripe_customer_id', c),
-    async createAccount({ email, passwordHash, shopName }) {
-      return toAccount(await run(db.from('accounts').insert({ email, password_hash: passwordHash, shop_name: shopName }).select('*').single()))!;
+    async createAccount({ email, passwordHash, shopName, privacyVersion, privacyAcceptedAt }) {
+      return toAccount(await run(db.from('accounts').insert({ email, password_hash: passwordHash, shop_name: shopName, privacy_version: privacyVersion, privacy_accepted_at: iso(privacyAcceptedAt) }).select('*').single()))!;
     },
     async updateAccount(id, patch) {
       return toAccount(await run(db.from('accounts').update(accountPatch(patch)).eq('id', id).select('*').single()))!;

@@ -446,3 +446,20 @@ input:disabled { opacity: .6; }
 .sync { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
 .spinner { width: 40px; height: 40px; margin: 40px auto; border-radius: 50%; border: 4px solid var(--line); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- Aviso de privacidad ---------- */
+.legal { max-width: 680px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 24px) 20px 48px; line-height: 1.6; }
+.legal h1 { font-size: 28px; font-weight: 800; letter-spacing: -.02em; margin: 12px 0 4px; }
+.legal h2 { font-size: 19px; margin: 28px 0 8px; }
+.legal h3 { font-size: 16px; margin: 16px 0 6px; }
+.legal p, .legal ul { margin: 0 0 10px; }
+.legal ul { padding-left: 22px; }
+.legal li { margin-bottom: 4px; }
+.legal a { color: var(--accent); text-decoration: underline; }
+.legal-back { display: inline-block; padding: 8px 0; font-weight: 650; }
+.legal-table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 15px; }
+.legal-table th, .legal-table td { text-align: left; padding: 8px 10px; border: 1px solid var(--line); vertical-align: top; }
+.legal-table th { background: var(--soft); }
+.legal-box { background: var(--soft); border-radius: 12px; padding: 14px; font-size: 15px; }
+.legal-link { text-align: center; font-size: 14px; margin-top: 4px; }
+.legal-link a, .underline, .check a { text-decoration: underline; color: inherit; }

@@ -16,9 +16,9 @@ export function memoryStore(): Store & { _accounts: Map<string, Account> } {
     async getAccountByEmail(email) { return find(a => a.email === email); },
     async getAccount(id) { return find(a => a.id === id); },
     async getAccountByCustomer(c) { return find(a => a.stripeCustomerId === c); },
-    async createAccount({ email, passwordHash, shopName }) {
+    async createAccount({ email, passwordHash, shopName, privacyVersion, privacyAcceptedAt }) {
       if (find(a => a.email === email)) throw new Error('duplicado');
-      const a: Account = { id: crypto.randomUUID(), email, passwordHash, shopName, emailVerifiedAt: null, createdAt: Date.now(), stripeCustomerId: null,
+      const a: Account = { id: crypto.randomUUID(), email, passwordHash, shopName, privacyVersion, privacyAcceptedAt, emailVerifiedAt: null, createdAt: Date.now(), stripeCustomerId: null,
         sub: { status: 'none', plan: null, periodEnd: null, trialEnd: null, cancelAtPeriodEnd: false, trialUsed: false } };
       accounts.set(a.id, a);
       return clone(a);

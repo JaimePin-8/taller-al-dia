@@ -1,7 +1,7 @@
 // Guarda la app en el teléfono para que abra sin internet.
-const CACHE = 'taller-al-dia-v3';
+const CACHE = 'taller-al-dia-v4';
 const ASSETS = [
-  './', './index.html', './styles.css', './config.js', './app.js', './manifest.webmanifest',
+  './', './index.html', './styles.css', './config.js', './app.js', './privacidad.html', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'
 ];
 

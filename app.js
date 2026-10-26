@@ -492,6 +492,7 @@ function empty(icon, title, text, cta = '') {
 /* ---------- Acceso: cuenta, código por correo y suscripción ---------- */
 
 const PRICES = { mensual: 250, anual: 2500 };
+const PRIVACY_VERSION = '2026-10-26';
 const PW_RULES = [
   ['Más de 10 caracteres', p => p.length >= 11],
   ['Un carácter especial (! @ # $ % & * …)', p => /[^\p{L}\p{N}\s]/u.test(p)],
@@ -605,6 +606,7 @@ function vAuth() {
           ${emailField}
           ${pwField('password', 'Contraseña', 'new-password', true)}
           ${pwField('password2', 'Repite la contraseña', 'new-password')}
+          <label class="check"><input type="checkbox" name="privacy" required><span>Leí y acepto el <a href="privacidad.html" target="_blank" rel="noopener">aviso de privacidad</a>.</span></label>
           <button class="btn primary big" type="submit">Crear cuenta</button>
         </form>
         <button class="btn ghost" data-act="authView" data-v="login">Ya tengo cuenta</button>
@@ -656,6 +658,7 @@ function vAuth() {
         </form>
         <button class="btn ghost" data-act="authView" data-v="forgot">Olvidé mi contraseña</button>
         <div class="auth-alt"><span>¿Primera vez?</span><button class="btn ghost wide" data-act="authView" data-v="signup">Crear cuenta · 14 días gratis</button></div>
+        <p class="legal-link"><a href="privacidad.html" target="_blank" rel="noopener">Aviso de privacidad</a></p>
       </main>`;
     }
   }
@@ -1212,7 +1215,7 @@ function vSettings() {
       <button class="btn ghost" data-act="loadDemo">Cargar datos de ejemplo</button>
       <button class="btn danger-ghost" data-act="wipe">${ic('trash', 18)} Borrar todos los datos</button>
     </section>
-    <p class="muted center small">Taller al Día · v2.0</p>
+    <p class="muted center small"><a class="underline" href="privacidad.html" target="_blank" rel="noopener">Aviso de privacidad</a> · Taller al Día v2.1</p>
   </main>`;
 }
 
@@ -1499,7 +1502,8 @@ const forms = {
     if (!authUI.shopName) { authUI.error = 'Escribe el nombre de tu taller.'; return render(); }
     if (bad.length) { authUI.error = `A la contraseña le falta: ${bad.join(', ')}.`; return render(); }
     if (f.password !== f.password2) { authUI.error = 'Las contraseñas no coinciden.'; return render(); }
-    return authRun(form, async () => toCode(await api('POST', '/signup', { shopName: f.shopName, email: f.email, password: f.password })));
+    if (f.privacy !== 'on') { authUI.error = 'Para crear tu cuenta debes aceptar el aviso de privacidad.'; return render(); }
+    return authRun(form, async () => toCode(await api('POST', '/signup', { shopName: f.shopName, email: f.email, password: f.password, acceptPrivacy: PRIVACY_VERSION })));
   },
   code(f, ds, form) {
     return authRun(form, async () => onSession(await api('POST', '/verify', { challengeId: authUI.challenge.challengeId, code: f.code.trim(), trustDevice: f.trust === 'on' })));

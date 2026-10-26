@@ -35,7 +35,7 @@ function setup() {
     tick: (ms: number) => { clock += ms; },
     setWebhook: (u: SubUpdate) => { nextWebhook = u; },
     async signup(email = 'jaime@taller.mx') {
-      const s = await call('POST', '/signup', { email, password: GOOD_PW, shopName: 'Taller Garza' });
+      const s = await call('POST', '/signup', { email, password: GOOD_PW, shopName: 'Taller Garza', acceptPrivacy: '2026-10-26' });
       assertEquals(s.status, 200);
       const v = await call('POST', '/verify', { challengeId: s.body.challengeId, code: lastCode() });
       assertEquals(v.status, 200);
@@ -61,11 +61,15 @@ Deno.test('hash de contraseña y códigos', async () => {
 
 Deno.test('registro rechaza contraseña débil y exige confirmar el correo', async () => {
   const t = setup();
-  const weak = await t.call('POST', '/signup', { email: 'a@b.mx', password: 'contraseña123', shopName: 'X' });
+  const weak = await t.call('POST', '/signup', { email: 'a@b.mx', password: 'contraseña123', shopName: 'X', acceptPrivacy: '2026-10-26' });
   assertEquals(weak.status, 400);
   assertEquals(weak.body.code, 'weak_password');
-  const s = await t.call('POST', '/signup', { email: 'A@B.mx', password: GOOD_PW, shopName: 'X' });
+  const noConsent = await t.call('POST', '/signup', { email: 'A@B.mx', password: GOOD_PW, shopName: 'X' });
+  assertEquals([noConsent.status, noConsent.body.code], [400, 'privacy']);
+  assertEquals(t.mails.length, 0);
+  const s = await t.call('POST', '/signup', { email: 'A@B.mx', password: GOOD_PW, shopName: 'X', acceptPrivacy: '2026-10-26' });
   assertEquals(s.body.purpose, 'verify');
+  assertEquals((await t.store.getAccountByEmail('a@b.mx'))?.privacyVersion, '2026-10-26');
   assertEquals(t.mails[0].to, 'a@b.mx');
   // Sin confirmar, entrar vuelve a pedir el código de confirmación.
   const l = await t.call('POST', '/login', { email: 'a@b.mx', password: GOOD_PW });

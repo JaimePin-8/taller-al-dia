@@ -10,8 +10,9 @@ export type Sub = {
 export type Account = {
   id: string; email: string; passwordHash: string; shopName: string;
   emailVerifiedAt: number | null; createdAt: number; stripeCustomerId: string | null; sub: Sub;
+  privacyVersion: string | null; privacyAcceptedAt: number | null;
 };
-export type AccountPatch = Partial<Pick<Account, 'passwordHash' | 'shopName' | 'emailVerifiedAt' | 'stripeCustomerId'>> & { sub?: Partial<Sub> };
+export type AccountPatch = Partial<Pick<Account, 'passwordHash' | 'shopName' | 'emailVerifiedAt' | 'stripeCustomerId' | 'privacyVersion' | 'privacyAcceptedAt'>> & { sub?: Partial<Sub> };
 export type Purpose = 'verify' | 'login' | 'reset';
 export type CodeRec = { id: string; accountId: string; purpose: Purpose; codeHash: string; attempts: number; createdAt: number; expiresAt: number; usedAt: number | null };
 export type SessionRec = { tokenHash: string; accountId: string; createdAt: number; expiresAt: number; userAgent: string };
@@ -23,7 +24,7 @@ export interface Store {
   getAccountByEmail(email: string): Promise<Account | null>;
   getAccount(id: string): Promise<Account | null>;
   getAccountByCustomer(customerId: string): Promise<Account | null>;
-  createAccount(a: { email: string; passwordHash: string; shopName: string }): Promise<Account>;
+  createAccount(a: { email: string; passwordHash: string; shopName: string; privacyVersion: string | null; privacyAcceptedAt: number | null }): Promise<Account>;
   updateAccount(id: string, patch: AccountPatch): Promise<Account>;
   getAttempt(key: string): Promise<Attempt | null>;
   failAttempt(key: string, max: number, lockMs: number, now: number): Promise<Attempt>;
@@ -178,11 +179,14 @@ export function createHandler(d: { store: Store; mailer: Mailer; billing: Billin
       const email = L.normEmail(b.email), pw = String(b.password ?? ''), shopName = String(b.shopName ?? '').trim().slice(0, 80);
       if (!shopName) throw new HttpError(400, 'Escribe el nombre de tu taller.');
       if (!L.validEmail(email)) throw new HttpError(400, 'Escribe un correo válido.');
+      const privacy = String(b.acceptPrivacy ?? '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(privacy)) throw new HttpError(400, 'Para crear tu cuenta debes aceptar el aviso de privacidad.', { code: 'privacy' });
       passwordOrThrow(pw);
       let acc = await store.getAccountByEmail(email);
       if (acc?.emailVerifiedAt) throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña.', { code: 'exists' });
       const passwordHash = await L.hashPassword(pw, iters);
-      acc = acc ? await store.updateAccount(acc.id, { passwordHash, shopName }) : await store.createAccount({ email, passwordHash, shopName });
+      const consent = { privacyVersion: privacy, privacyAcceptedAt: now() };
+      acc = acc ? await store.updateAccount(acc.id, { passwordHash, shopName, ...consent }) : await store.createAccount({ email, passwordHash, shopName, ...consent });
       return challenge(acc, 'verify');
     },
 
