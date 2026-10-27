@@ -229,6 +229,10 @@ p { margin: 0; }
 .kpi span { font-size: 11px; color: var(--muted); font-weight: 800; text-transform: uppercase; letter-spacing: .07em; }
 .kpi b { font-family: var(--display); font-size: 28px; line-height: 1.1; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi small { font-size: 12px; color: var(--muted); }
+.kpis.three { gap: 8px; }
+.kpis.three .kpi { padding: 10px 8px 10px 12px; }
+.kpis.three .kpi span { font-size: 10px; letter-spacing: .05em; }
+.kpis.three .kpi b { font-size: 22px; }
 .list { padding: 4px 0; }
 .list-row {
   display: flex; align-items: center; gap: 10px; width: 100%;
