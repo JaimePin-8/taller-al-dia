@@ -1058,6 +1058,7 @@ function vOrderForm(editId, q) {
         <label class="field"><span>Nombre del cliente</span><input data-draft="newClient.name" value="${esc(nc.name)}" placeholder="Nombre y apellido" autocapitalize="words" autocomplete="off"></label>
         <label class="field"><span>WhatsApp</span><input data-draft="newClient.phone" value="${esc(nc.phone)}" inputmode="tel" placeholder="10 dígitos" autocomplete="off"></label>`}
       ${vehicleFields('newClient', nc)}
+      <button type="button" class="btn primary" data-act="saveNewClient">${ic('check', 18)} ${ex ? 'Guardar vehículo' : 'Guardar cliente'}</button>
       <button type="button" class="btn small ghost" data-act="pickClear">Buscar cliente existente</button>
     </div>`;
   } else {
@@ -1126,28 +1127,38 @@ function vOrderForm(editId, q) {
   </div>`;
 }
 
+function newClientError(nc) {
+  if (!nc.clientId && !String(nc.name || '').trim()) return 'Escribe el nombre del cliente';
+  if (!String([nc.make, nc.model, nc.plate].join('')).trim()) return 'Escribe la marca, modelo o placas';
+  return '';
+}
+
+// Crea el cliente (si es nuevo) y su vehículo; devuelve el id del vehículo.
+function createNewClient(nc) {
+  let cId = nc.clientId;
+  if (!cId) {
+    cId = uid();
+    S.clients.push({ id: cId, name: nc.name.trim(), phone: String(nc.phone || '').trim(), notes: '', createdAt: todayISO() });
+  }
+  const vId = uid();
+  S.vehicles.push({ id: vId, clientId: cId, make: (nc.make || '').trim(), model: (nc.model || '').trim(), year: (nc.year || '').trim(), plate: (nc.plate || '').trim().toUpperCase(), kmPerDay: null, createdAt: todayISO() });
+  return vId;
+}
+
 function saveOrder() {
   const d = draft;
   const nc = d.newClient;
   if (!d.vehicleId) {
     if (!nc) return toast('Elige el vehículo o registra un cliente nuevo');
-    if (!nc.clientId && !String(nc.name || '').trim()) return toast('Escribe el nombre del cliente');
-    if (!String([nc.make, nc.model, nc.plate].join('')).trim()) return toast('Escribe la marca, modelo o placas');
+    const err = newClientError(nc);
+    if (err) return toast(err);
   }
   const items = d.items.filter(i => String(i.name || '').trim()).map(i => ({ serviceId: i.serviceId || null, name: String(i.name).trim(), price: +i.price || 0, cost: +i.cost || 0 }));
   if (!items.length) return toast('Marca al menos un servicio o concepto');
   if (!d.date) return toast('Falta la fecha');
 
   let vId = d.vehicleId;
-  if (!vId) {
-    let cId = nc.clientId;
-    if (!cId) {
-      cId = uid();
-      S.clients.push({ id: cId, name: nc.name.trim(), phone: String(nc.phone || '').trim(), notes: '', createdAt: todayISO() });
-    }
-    vId = uid();
-    S.vehicles.push({ id: vId, clientId: cId, make: (nc.make || '').trim(), model: (nc.model || '').trim(), year: (nc.year || '').trim(), plate: (nc.plate || '').trim().toUpperCase(), kmPerDay: null, createdAt: todayISO() });
-  }
+  if (!vId) vId = createNewClient(nc);
   const recs = d.recs.filter(r => String(r.text || '').trim()).map(r => ({ id: r.id || uid(), text: String(r.text).trim(), price: +r.price || 0, status: r.status || 'pendiente' }));
   const km = +String(d.km).replace(/\D/g, '') || null;
 
@@ -1437,6 +1448,14 @@ const actions = {
   pickClientNewVeh(el) { draft.newClient = { clientId: el.dataset.id }; render(); },
   pickNew() { draft.newClient = { name: '', phone: '' }; render(); $('[data-draft="newClient.name"]')?.focus(); },
   pickClear() { draft.vehicleId = null; draft.newClient = null; render(); },
+  saveNewClient() {
+    const nc = draft.newClient;
+    const err = nc && newClientError(nc);
+    if (err) return toast(err);
+    draft.vehicleId = createNewClient(nc);
+    draft.newClient = null;
+    save(); render(); toast('Cliente guardado');
+  },
   saveOrder,
   discardDraft() {
     if ((draft.items.length || draft.newClient) && !confirm('¿Descartar este servicio?')) return;
